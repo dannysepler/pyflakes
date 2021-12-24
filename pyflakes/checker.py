@@ -322,10 +322,11 @@ class Binding(object):
                 the node that this binding was last used.
     """
 
-    def __init__(self, name, source):
+    def __init__(self, name, source, *, assigned=True):
         self.name = name
         self.source = source
         self.used = False
+        self.assigned = assigned
 
     def __str__(self):
         return self.name
@@ -1129,6 +1130,12 @@ class Checker(object):
                 break
         existing = scope.get(value.name)
 
+        global_scope = self.scopeStack[-1]
+        if (existing and global_scope.get(value.name) == existing and
+                not existing.assigned):
+            # make sure the variable is in the global scope before setting as assigned
+            existing.assigned = True
+
         if (existing and not isinstance(existing, Builtin) and
                 not self.differentForks(node, existing.source)):
 
@@ -1207,6 +1214,10 @@ class Checker(object):
                     continue
 
             binding = scope.get(name, None)
+
+            if getattr(binding, 'assigned', None) is False:
+                self.report(messages.UndefinedName, node, name)
+
             if isinstance(binding, Annotation) and not self._in_postponed_annotation:
                 continue
 
@@ -1276,12 +1287,19 @@ class Checker(object):
                     continue
                 # if the name was defined in that scope, and the name has
                 # been accessed already in the current scope, and hasn't
-                # been declared global
+                # been assigned globally
                 used = name in scope and scope[name].used
                 if used and used[0] is self.scope and name not in self.scope.globals:
                     # then it's probably a mistake
                     self.report(messages.UndefinedLocal,
                                 scope[name].used[1], name, scope[name].source)
+
+                    # and we can remove UndefinedName messages already reported for this name
+                    self.messages = [
+                        m for m in self.messages if not
+                        isinstance(m, messages.UndefinedName) or
+                        m.message_args[0] != name]
+
                     break
 
         parent_stmt = self.getParent(node)
@@ -2002,11 +2020,9 @@ class Checker(object):
 
             # One 'global' statement can bind multiple (comma-delimited) names.
             for node_name in node.names:
-                node_value = Assignment(node_name, node)
+                node_value = Assignment(node_name, node, assigned=False)
 
                 # Remove UndefinedName messages already reported for this name.
-                # TODO: if the global is not used in this scope, it does not
-                # become a globally defined name.  See test_unused_global.
                 self.messages = [
                     m for m in self.messages if not
                     isinstance(m, messages.UndefinedName) or
